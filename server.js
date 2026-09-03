@@ -11,9 +11,9 @@ const PORT = process.env.PORT || 3000;
 
 const REDIRECT_KEY_HEX = '8ab50feca8cb21db27f7f9984a13ca9c3c87e56e4b0f5e5d3470e04d123ace11';
 
-const DESTINATION = 'https://www.facebook.com';
+const DESTINATION = 'https://facebook.com';
 
-const PUBLIC_BASE_URL = 'https://redirect-service-pn5w.onrender.com';
+const PUBLIC_BASE_URL = 'https://inreal.space';
 
 // ============================================================
 // EMAIL DELIVERABILITY — path looks like a real webpage,
