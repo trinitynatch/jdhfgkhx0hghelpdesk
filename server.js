@@ -1,6 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const http = require('http');
+const { exec } = require('child_process');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10,18 +11,9 @@ const PORT = process.env.PORT || 3000;
 // ============================================================
 
 const REDIRECT_KEY_HEX = '8ab50feca8cb21db27f7f9984a13ca9c3c87e56e4b0f5e5d3470e04d123ace11';
-
-const DESTINATION = 'https://facebook.com';
-
-const PUBLIC_BASE_URL = 'https://inreal.space';
-
-// ============================================================
-// EMAIL DELIVERABILITY — path looks like a real webpage,
-// not a redirect tracker. Change this to anything natural
-// that fits your brand e.g. 'article', 'post', 'news', 'view'
-// ============================================================
-
-const REDIRECT_PATH = 'article';
+const DESTINATION      = 'https://www.facebook.com';
+const PUBLIC_BASE_URL  = 'https://inreal.space';
+const REDIRECT_PATH    = 'article';
 
 // ============================================================
 // ALLOWED DESTINATION DOMAINS
@@ -44,60 +36,7 @@ if (KEY.length !== 32) {
 }
 
 // ============================================================
-// MASK destination for terminal printing
-// Shows only enough to confirm it works without exposing the
-// full link in plain text (protects from screen-scrapers/bots)
-// ============================================================
-
-function maskDestination(url) {
-  try {
-    const parsed = new URL(url);
-    const host   = parsed.hostname;
-    // Show only first 3 chars and last 3 chars of hostname
-    const masked = host.length > 8
-      ? host.slice(0, 3) + '*'.repeat(host.length - 6) + host.slice(-3)
-      : '*'.repeat(host.length);
-    return `${parsed.protocol}//${masked}/***`;
-  } catch {
-    return '***';
-  }
-}
-
-// ============================================================
-// MASK redirect URL for terminal — hides the token too
-// ============================================================
-
-function maskRedirectUrl(url) {
-  const parts = url.split('/');
-  const token = parts[parts.length - 1];
-  const visible = token.slice(0, 6);
-  return url.replace(token, `${visible}${'*'.repeat(20)}[hidden]`);
-}
-
-// ============================================================
-// BUILD PAYLOAD — all variables bundled into the token
-// ============================================================
-
-function buildPayload(destination, extra = {}) {
-  return JSON.stringify({
-    destination,
-    campaignId:  extra.campaignId  || 'cmp_' + crypto.randomBytes(8).toString('hex'),
-    userId:      extra.userId      || 'usr_' + crypto.randomBytes(8).toString('hex'),
-    sessionId:   extra.sessionId   || 'ses_' + crypto.randomBytes(10).toString('hex'),
-    source:      extra.source      || 'direct',
-    medium:      extra.medium      || 'email',
-    referrer:    extra.referrer    || 'none',
-    clickId:     extra.clickId     || 'clk_' + crypto.randomBytes(12).toString('hex'),
-    region:      extra.region      || 'us-east-1',
-    device:      extra.device      || 'unknown',
-    createdAt:   Date.now(),
-    expiresAt:   Date.now() + (30 * 24 * 60 * 60 * 1000),
-    nonce:       crypto.randomBytes(16).toString('hex'),
-  });
-}
-
-// ============================================================
-// AES-256-GCM ENCRYPTION
+// ENCRYPTION
 // ============================================================
 
 function encrypt(text) {
@@ -116,7 +55,7 @@ function encrypt(text) {
 }
 
 // ============================================================
-// AES-256-GCM DECRYPTION
+// DECRYPTION
 // ============================================================
 
 function decrypt(token) {
@@ -139,11 +78,11 @@ function decrypt(token) {
 // DESTINATION VALIDATION
 // ============================================================
 
-function isAllowedDestination(destination) {
+function isAllowedDestination(url) {
   try {
-    const url = new URL(destination);
-    if (url.protocol !== 'https:') return false;
-    if (!ALLOWED_HOSTS.has(url.hostname)) return false;
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:') return false;
+    if (!ALLOWED_HOSTS.has(parsed.hostname)) return false;
     return true;
   } catch {
     return false;
@@ -151,7 +90,49 @@ function isAllowedDestination(destination) {
 }
 
 // ============================================================
-// CREATE AN ENCRYPTED REDIRECT TOKEN
+// HOME PAGE — shows a clickable link in browser
+// ============================================================
+
+app.get('/', (req, res) => {
+  // Generate a fresh token every time someone visits /
+  const token = encrypt(DESTINATION);
+  const redirectUrl = `${PUBLIC_BASE_URL}/${REDIRECT_PATH}/${token}`;
+
+  // Return a simple HTML page with a clickable link
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Redirect Service</title>
+        <style>
+          body { font-family: Arial, sans-serif; padding: 40px; }
+          a { 
+            display: inline-block;
+            padding: 12px 24px;
+            background: #0066cc;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 16px;
+          }
+          a:hover { background: #0052a3; }
+          p { color: #555; word-break: break-all; }
+        </style>
+      </head>
+      <body>
+        <h2>Your Redirect Link</h2>
+        <p>Click the button below to test your redirect:</p>
+        <a href="${redirectUrl}">Click to Redirect</a>
+        <br><br>
+        <p><strong>Your tracking link:</strong><br>${redirectUrl}</p>
+        <p><small>This link is valid for 30 days.</small></p>
+      </body>
+    </html>
+  `);
+});
+
+// ============================================================
+// CREATE LINK ENDPOINT
 // ============================================================
 
 app.get('/create-link', (req, res) => {
@@ -165,74 +146,45 @@ app.get('/create-link', (req, res) => {
     return res.status(400).json({ error: 'Invalid destination' });
   }
 
-  const payload     = buildPayload(destination, {
-    source:     req.query.source     || 'email',
-    medium:     req.query.medium     || 'campaign',
-    campaignId: req.query.campaignId || undefined,
-    userId:     req.query.userId     || undefined,
-    device:     req.query.device     || undefined,
-    region:     req.query.region     || undefined,
-  });
-
-  const token       = encrypt(payload);
-
-  // Use natural-looking path instead of /CL0/ for email deliverability
+  const token      = encrypt(destination);
   const redirectUrl = `${PUBLIC_BASE_URL}/${REDIRECT_PATH}/${token}`;
-  const tokenLength = token.length;
 
-  // Print masked versions only — never expose full destination or token
-  console.log('\nNew redirect link created');
-  console.log(`Destination : ${maskDestination(destination)}`);
-  console.log(`Token length: ${tokenLength} characters`);
-  console.log(`Link        : ${maskRedirectUrl(redirectUrl)}`);
-  console.log('');
+  console.log(`\nNew link created -> ${redirectUrl}`);
 
   return res.json({
     redirectUrl,
-    tokenLength,
+    tokenLength: token.length,
+    destination
   });
 });
 
 // ============================================================
-// REDIRECT ENDPOINT — uses natural path
+// REDIRECT ENDPOINT — decrypts token and redirects
 // ============================================================
 
 app.get(`/${REDIRECT_PATH}/:token`, (req, res) => {
   try {
-    const { token } = req.params;
-    const raw       = decrypt(token);
-    const data      = JSON.parse(raw);
-    const destination = data.destination;
+    const { token }   = req.params;
+    const destination = decrypt(token);
+
+    console.log(`\nRedirecting to: ${destination}`);
 
     if (!isAllowedDestination(destination)) {
+      console.log('Destination not allowed:', destination);
       return res.status(400).send('Not found');
     }
 
-    if (data.expiresAt && Date.now() > data.expiresAt) {
-      return res.status(410).send('Not found');
-    }
-
-    // Log click details — destination masked in logs too
-    console.log('\n--- Click ---');
-    console.log(`Time     : ${new Date().toISOString()}`);
-    console.log(`Dest     : ${maskDestination(destination)}`);
-    console.log(`Campaign : ${data.campaignId || 'n/a'}`);
-    console.log(`User     : ${data.userId     || 'n/a'}`);
-    console.log(`Source   : ${data.source     || 'n/a'}`);
-    console.log(`Click ID : ${data.clickId    || 'n/a'}`);
-    console.log(`Expires  : ${new Date(data.expiresAt).toISOString()}`);
-    console.log('-------------\n');
-
+    // Redirect to real destination
     return res.redirect(302, destination);
 
   } catch (error) {
-    // Generic error message — never reveal internals to the outside
+    console.error('Decrypt error:', error.message);
     return res.status(404).send('Not found');
   }
 });
 
 // ============================================================
-// START SERVER + AUTO-GENERATE LINK ON STARTUP
+// START SERVER
 // ============================================================
 
 app.listen(PORT, () => {
@@ -241,45 +193,10 @@ app.listen(PORT, () => {
   console.log(` Redirect service running on port ${PORT}`);
   console.log('================================================');
   console.log('');
-
-  const requestUrl =
-    `http://localhost:${PORT}/create-link` +
-    `?destination=${encodeURIComponent(DESTINATION)}`;
-
-  http.get(requestUrl, (res) => {
-    let data = '';
-    res.on('data', (chunk) => { data += chunk; });
-    res.on('end', () => {
-      try {
-        const parsed = JSON.parse(data);
-        if (parsed.redirectUrl) {
-          console.log('Your tracking link is ready.');
-          console.log('');
-          console.log('Full link (copy this):');
-          console.log('');
-          // Print the FULL real link only once here, locally
-          // — this is your copy moment, not logged anywhere else
-          console.log(parsed.redirectUrl);
-          console.log('');
-          console.log(`Token length: ${parsed.tokenLength} characters`);
-          console.log('');
-          console.log('Test with curl (copy and run in a new window):');
-          console.log('');
-          console.log(`curl -Lv "${parsed.redirectUrl}"`);
-          console.log('');
-          console.log('================================================');
-          console.log(' After copying your link, close this window to');
-          console.log(' stop exposing it in an open terminal session.');
-          console.log('================================================');
-          console.log('');
-        } else {
-          console.log('Could not generate link:', parsed.error);
-        }
-      } catch (e) {
-        console.log('Parse error:', e.message);
-      }
-    });
-  }).on('error', (e) => {
-    console.log('Internal request error:', e.message);
-  });
+  console.log('Open this in your browser to test:');
+  console.log(`http://localhost:${PORT}`);
+  console.log('');
+  console.log('Or generate a link directly:');
+  console.log(`http://localhost:${PORT}/create-link?destination=${encodeURIComponent(DESTINATION)}`);
+  console.log('');
 });
